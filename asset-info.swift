@@ -19,7 +19,7 @@ Ethernet MAC (IOKit)
 Battery Charge (IOKit)
 */
 
-import Cocoa
+import Foundation
 import IOKit
 
 /*
@@ -39,17 +39,26 @@ extension String {
 /*
 Returns a dictionary of properties for a given IOService
 */
-func ioServiceDict(ioService: String) -> NSDictionary {
-	var serviceDict = NSDictionary.init()
-	let service = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching(ioService))
-	var cfProps : Unmanaged<CFMutableDictionary>?
-	if IORegistryEntryCreateCFProperties(service, &cfProps, kCFAllocatorDefault, 0) == KERN_SUCCESS {
-		if let cfProps = cfProps {
-			serviceDict = cfProps.takeRetainedValue() as NSDictionary
+func ioServiceDicts(ioService: String) -> [NSDictionary] {
+	var serviceDicts = [NSDictionary]()
+	var iter: io_iterator_t = 0
+	IOServiceGetMatchingServices(kIOMasterPortDefault, IOServiceMatching(ioService), &iter)
+	while true {
+		let service: io_service_t = IOIteratorNext(iter)
+		if service == 0 {
+			break
 		}
+		var cfProps: Unmanaged<CFMutableDictionary>?
+		if IORegistryEntryCreateCFProperties(service, &cfProps, kCFAllocatorDefault, 0) == KERN_SUCCESS {
+			if let cfProps = cfProps {
+				let serviceDict = cfProps.takeRetainedValue() as NSDictionary
+				serviceDicts.append(serviceDict)
+			}
+		}
+		IOObjectRelease(service)
 	}
-	IOObjectRelease(service)
-	return serviceDict
+	IOObjectRelease(iter)
+	return serviceDicts
 }
 
 /*
@@ -158,25 +167,34 @@ public struct Sysctl {
 Print the serial
 */
 var serial = String()
-let platformProps = ioServiceDict(ioService: "IOPlatformExpertDevice")
-if let value = platformProps["IOPlatformSerialNumber"] as? String {
-	serial = value
-	print("Serial: \(serial)")
+let allPlatformProps = ioServiceDicts(ioService: "IOPlatformExpertDevice")
+if allPlatformProps.count > 0 {
+	let platformProps = allPlatformProps[0]
+	if let value = platformProps["IOPlatformSerialNumber"] as? String {
+		serial = value
+		print("Serial: \(serial)")
+	}
 }
 
 /*
 Print the UDID
 */
-if let value = platformProps["IOPlatformUUID"] as? String {
-	print("UDID: \(value)")
+if allPlatformProps.count > 0 {
+	let platformProps = allPlatformProps[0]
+	if let value = platformProps["IOPlatformUUID"] as? String {
+		print("UDID: \(value)")
+	}
 }
 
 /*
 Print the model
 */
-if let value = platformProps["model"] as? Data {
-	if let model = String(data: value, encoding: .utf8) {
-		print("Model: \(model)")
+if allPlatformProps.count > 0 {
+	let platformProps = allPlatformProps[0]
+	if let value = platformProps["model"] as? Data {
+		if let model = String(data: value, encoding: .utf8) {
+			print("Model: \(model)")
+		}
 	}
 }
 
@@ -241,36 +259,36 @@ print("OS: \(os)")
 /*
 Print the APFS or CoreStorage capacity
 */
-var storageBytes = Double()
 var classesToTry = ["AppleAPFSMedia", "CoreStorageLogical"]
 for classToTry in classesToTry {
-	let storageProps = ioServiceDict(ioService: classToTry)
-	if let value = storageProps["Size"] {
-		storageBytes = value as? Double ?? 0
-		var storageGb = storageBytes / 1000000000
-		storageGb = round(10 * storageGb) / 10
-		let storage = String(describing: storageGb) + " GB"
-		print("Storage: \(storage)")
-		break
+	let allStorageProps = ioServiceDicts(ioService: classToTry)
+	for storageProps in allStorageProps {
+		if let value = storageProps["Size"] {
+			let storageBytes = value as! Double
+			var storageGb = storageBytes / 1000000000
+			storageGb = round(10 * storageGb) / 10
+			let storage = String(describing: storageGb) + " GB"
+			print("Storage: \(storage)")
+		}
 	}
 }
 
 /*
 Print the WiFi address
 */
-var wifiMac = String()
-classesToTry = ["AirPort_BrcmNIC", "AirPort_Brcm4360"]
+classesToTry = ["AirPort_BrcmNIC", "AirPort_Brcm4360", "AppleBCMWLANCore"]
 for classToTry in classesToTry {
-	let wifiProps = ioServiceDict(ioService: classToTry)
-	if let value = wifiProps["IOMACAddress"] {
-		wifiMac = String(describing: value)
-		var charsToTrim = CharacterSet.init(charactersIn: "<>")
-		charsToTrim.formUnion(CharacterSet.whitespacesAndNewlines)
-		wifiMac = wifiMac.trimmingCharacters(in: charsToTrim)
-		wifiMac = wifiMac.replacingOccurrences(of: " ", with: "")
-		wifiMac = wifiMac.pairs.joined(separator: ":").uppercased()
-		print("WiFi MAC: \(wifiMac)")
-		break
+	let allwifiProps = ioServiceDicts(ioService: classToTry)
+	for wifiProps in allwifiProps {
+		if let value = wifiProps["IOMACAddress"] {
+			var wifiMac = String(describing: value)
+			var charsToTrim = CharacterSet.init(charactersIn: "<>")
+			charsToTrim.formUnion(CharacterSet.whitespacesAndNewlines)
+			wifiMac = wifiMac.trimmingCharacters(in: charsToTrim)
+			wifiMac = wifiMac.replacingOccurrences(of: " ", with: "")
+			wifiMac = wifiMac.pairs.joined(separator: ":").uppercased()
+			print("WiFi MAC: \(wifiMac)")
+		}
 	}
 }
 
@@ -278,44 +296,64 @@ for classToTry in classesToTry {
 Print the Bluetooth address
 */
 var bluetoothMac = String()
-let bluetoothProps = ioServiceDict(ioService: "IOBluetoothHCIController")
-if let value = bluetoothProps["BluetoothDeviceAddress"] as? String {
-	bluetoothMac = value.replacingOccurrences(of: "-", with: ":").uppercased()
-	print("Bluetooth MAC: \(bluetoothMac)")
+let allBluetoothProps = ioServiceDicts(ioService: "AppleBroadcomBluetoothHostController")
+for bluetoothProps in allBluetoothProps {
+	if let value = bluetoothProps["BluetoothDeviceAddressData"] {
+		var bluetoothMac = String(describing: value)
+		var charsToTrim = CharacterSet.init(charactersIn: "<>")
+		charsToTrim.formUnion(CharacterSet.whitespacesAndNewlines)
+		bluetoothMac = bluetoothMac.trimmingCharacters(in: charsToTrim)
+		bluetoothMac = bluetoothMac.replacingOccurrences(of: " ", with: "")
+		bluetoothMac = bluetoothMac.pairs.joined(separator: ":").uppercased()
+		print("Bluetooth MAC: \(bluetoothMac)")
+	}
 }
 
 /*
 Print the ethernet address
 */
-var ethernetMac = String()
-let ethernetProps = ioServiceDict(ioService: "BCM5701Enet")
-if let value = ethernetProps["IOMACAddress"] {
-	ethernetMac = String(describing: value)
-	var charsToTrim = CharacterSet.init(charactersIn: "<>")
-	charsToTrim.formUnion(CharacterSet.whitespacesAndNewlines)
-	ethernetMac = ethernetMac.trimmingCharacters(in: charsToTrim)
-	ethernetMac = ethernetMac.replacingOccurrences(of: " ", with: "")
-	ethernetMac = ethernetMac.pairs.joined(separator: ":").uppercased()
-	print("Ethernet MAC: \(ethernetMac)")
+classesToTry = ["BCM5701Enet", "AppleEthernetAquantiaAqtion"]
+for classToTry in classesToTry {
+	let allEthernetProps = ioServiceDicts(ioService: classToTry)
+	for ethernetProps in allEthernetProps {
+		if let value = ethernetProps["IOMACAddress"] {
+			if let prodcutName = ethernetProps["Product Name"] as? String {
+				if prodcutName == "Thunderbolt Ethernet" {
+					// Skip any thunderbolt ethernet adapters
+					break
+				}
+			}
+			var ethernetMac = String(describing: value)
+			var charsToTrim = CharacterSet.init(charactersIn: "<>")
+			charsToTrim.formUnion(CharacterSet.whitespacesAndNewlines)
+			ethernetMac = ethernetMac.trimmingCharacters(in: charsToTrim)
+			ethernetMac = ethernetMac.replacingOccurrences(of: " ", with: "")
+			ethernetMac = ethernetMac.pairs.joined(separator: ":").uppercased()
+			print("Ethernet MAC: \(ethernetMac)")
+		}
+	}
 }
 
 /*
 Print the battery charge
 */
-var charge = String()
-var batteryProps = ioServiceDict(ioService: "IOPMPowerSource")
-if let value = batteryProps["BatteryInstalled"] {
-	if value as? Bool ?? false == true {
-		var currentCharge = Double()
-		var maxCharge = Double()
-		if let value = batteryProps["CurrentCapacity"] {
-			currentCharge = value as? Double ?? 0
+
+let allBatteryProps = ioServiceDicts(ioService: "IOPMPowerSource")
+if allBatteryProps.count > 0 {
+	let batteryProps = allBatteryProps[0]
+	if let value = batteryProps["BatteryInstalled"] {
+		if value as! Bool == true {
+			var currentCharge = Double()
+			var maxCharge = Double()
+			if let value = batteryProps["CurrentCapacity"] {
+				currentCharge = value as! Double
+			}
+			if let value = batteryProps["MaxCapacity"] {
+				maxCharge = value as! Double
+			}
+			let percentCharge = currentCharge/maxCharge
+			let charge =  round( 1000 * percentCharge ) / 10
+			print("Battery Charge: \(charge)%")
 		}
-		if let value = batteryProps["MaxCapacity"] {
-			maxCharge = value as? Double ?? 0
-		}
-		let percentCharge = currentCharge/maxCharge
-		charge = String(round(1000*percentCharge)/10) + "%"
-		print("Battery Charge: \(charge)")
 	}
 }
